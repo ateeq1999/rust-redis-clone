@@ -1,5 +1,5 @@
 use super::RespError;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use std::str;
 
 #[derive(Debug)]
@@ -7,13 +7,14 @@ pub enum RespType {
     SimpleString(String),
     BulkString(String),
     SimpleError(String),
+    Array(Vec<RespType>),
 }
 
 impl RespType {
     /// Parse the given bytes into its respective RESP type.
-    pub fn parse(buffer: &BytesMut) -> Result<(RespType, usize), RespError> {
+    pub fn parse(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
         if buffer.is_empty() {
-            return Err(RespError::Other("Empty buffer provided".to_string()));
+            return Err(RespError::Incomplete);
         }
 
         // Match on the first byte identifier safely
@@ -21,6 +22,7 @@ impl RespType {
             b'+' => Self::parse_simple_string(buffer),
             b'-' => Self::parse_simple_error(buffer),
             b'$' => Self::parse_bulk_string(buffer),
+            b'*' => Self::parse_array(buffer),
             invalid_byte => Err(RespError::Other(format!(
                 "Invalid RESP data type identifier byte: '{invalid_byte}'"
             ))),
@@ -28,7 +30,7 @@ impl RespType {
     }
 
     /// Parse a SimpleString RESP value. Example: `+OK\r\n`
-    fn parse_simple_string(buffer: &BytesMut) -> Result<(RespType, usize), RespError> {
+    fn parse_simple_string(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
         // Find the trailing CRLF, skipping the '+' byte at index 0
         match Self::read_till_crlf(&buffer[1..]) {
             Some((string_bytes, total_bytes_read)) => {
@@ -42,14 +44,13 @@ impl RespType {
                     )),
                 }
             }
-            None => Err(RespError::InvalidSimpleString(
-                "Incomplete SimpleString data: Missing terminating CRLF (\\r\\n)".to_string(),
-            )),
+            // No CRLF yet: this may just mean the rest is still in flight.
+            None => Err(RespError::Incomplete),
         }
     }
 
     /// Parse a SimpleError RESP value. Example: `-ERR unknown command\r\n`
-    fn parse_simple_error(buffer: &BytesMut) -> Result<(RespType, usize), RespError> {
+    fn parse_simple_error(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
         // Find the trailing CRLF, skipping the '-' byte at index 0
         match Self::read_till_crlf(&buffer[1..]) {
             Some((error_bytes, total_bytes_read)) => {
@@ -63,23 +64,17 @@ impl RespType {
                     )),
                 }
             }
-            None => Err(RespError::InvalidSimpleError(
-                "Incomplete SimpleError data: Missing terminating CRLF (\\r\\n)".to_string(),
-            )),
+            None => Err(RespError::Incomplete),
         }
     }
 
     /// Parse a BulkString RESP value. Example: `$5\r\nhello\r\n`
-    pub fn parse_bulk_string(buffer: &BytesMut) -> Result<(RespType, usize), RespError> {
+    pub fn parse_bulk_string(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
         // 1. Find the first CRLF to extract the length line.
         // We look past the identifier '$' by slicing from index 1.
         let (len_bytes, length_line_size) = match Self::read_till_crlf(&buffer[1..]) {
             Some(result) => result,
-            None => {
-                return Err(RespError::InvalidBulkString(
-                    "Missing structural length definition line or its trailing CRLF".to_string(),
-                ));
-            }
+            None => return Err(RespError::Incomplete),
         };
 
         // 2. Parse the payload length from the extracted bytes line
@@ -92,11 +87,7 @@ impl RespType {
 
         // 3. Ensure the buffer holds the full payload AND its trailing CRLF
         if buffer.len() < total_expected_bytes {
-            return Err(RespError::InvalidBulkString(format!(
-                "Incomplete buffer payload: Expected at least {} bytes but buffer only contains {} bytes",
-                total_expected_bytes,
-                buffer.len()
-            )));
+            return Err(RespError::Incomplete);
         }
 
         // 4. Validate that the payload is properly followed by the trailing CRLF sequence
@@ -114,6 +105,36 @@ impl RespType {
                 "Bulk string payload contains invalid UTF-8 string data".to_string(),
             )),
         }
+    }
+
+    /// Parse an Array RESP value. Example: `*2\r\n$4\r\nPING\r\n$4\r\npong\r\n`
+    ///
+    /// Redis commands are sent as arrays of bulk strings, so this recurses
+    /// into `parse` for each element rather than assuming a specific type.
+    fn parse_array(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
+        // 1. Find the first CRLF to extract the element-count line.
+        let (len_bytes, length_line_size) = match Self::read_till_crlf(&buffer[1..]) {
+            Some(result) => result,
+            None => return Err(RespError::Incomplete),
+        };
+
+        // 2. Parse the number of elements the array should contain
+        let num_elements = Self::parse_usize_from_buf(len_bytes)?;
+
+        // +1 accounts for the leading '*' byte
+        let mut consumed = 1 + length_line_size;
+        let mut elements = Vec::with_capacity(num_elements);
+
+        // 3. Parse each element in turn, advancing past whatever bytes it consumed.
+        // Any nested `Incomplete` bubbles straight up: the whole array is only
+        // ready once every element is fully buffered.
+        for _ in 0..num_elements {
+            let (element, element_size) = Self::parse(&buffer[consumed..])?;
+            elements.push(element);
+            consumed += element_size;
+        }
+
+        Ok((RespType::Array(elements), consumed))
     }
 
     /// Finds the index of the first CRLF ("\r\n").
@@ -152,6 +173,13 @@ impl RespType {
                 Bytes::from_iter(bulkstr_bytes)
             }
             RespType::SimpleError(es) => Bytes::from_iter(format!("-{}\r\n", es).into_bytes()),
+            RespType::Array(elements) => {
+                let mut array_bytes = format!("*{}\r\n", elements.len()).into_bytes();
+                for element in elements {
+                    array_bytes.extend_from_slice(&element.to_bytes());
+                }
+                Bytes::from_iter(array_bytes)
+            }
         }
     }
 }

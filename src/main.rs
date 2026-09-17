@@ -1,12 +1,11 @@
 use anyhow::{Error, Result};
-use bytes::BytesMut;
+use futures::{SinkExt, StreamExt};
 use log::{error, info};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_util::codec::Framed;
 
 mod resp;
+use crate::resp::codec::RespCodec;
 use crate::resp::types::RespType;
 
 #[derive(Debug)]
@@ -28,7 +27,7 @@ impl Server {
 
     pub async fn run(&mut self) -> Result<()> {
         loop {
-            let mut sock = match self.accept_conn().await {
+            let sock = match self.accept_conn().await {
                 Ok(stream) => stream,
                 Err(e) => {
                     error!("{}", e);
@@ -36,23 +35,29 @@ impl Server {
                 }
             };
 
-            tokio::spawn(async move {
-                let mut buffer = BytesMut::with_capacity(512);
-                if let Err(e) = sock.read_buf(&mut buffer).await {
-                    error!("Error reading request: {}", e);
-                    panic!("Error reading request: {}", e);
-                }
+            tokio::spawn(handle_connection(sock));
+        }
+    }
+}
 
-                let resp_data = match RespType::parse(&buffer) {
-                    Ok((data, _)) => data,
-                    Err(e) => RespType::SimpleError(e.to_string()),
-                };
+/// Drives a single connection: frames RESP values off the socket via
+/// `RespCodec` and echoes each one back, until the client disconnects
+/// or sends something the codec can't parse.
+async fn handle_connection(sock: TcpStream) {
+    let mut frames = Framed::new(sock, RespCodec);
 
-                if let Err(e) = sock.write_all(&resp_data.to_bytes()[..]).await {
-                    error!("{}", e);
-                    panic!("Error writing response")
-                }
-            });
+    while let Some(result) = frames.next().await {
+        let response = match result {
+            Ok(value) => value,
+            Err(e) => {
+                error!("Error reading request: {}", e);
+                RespType::SimpleError(e.to_string())
+            }
+        };
+
+        if let Err(e) = frames.send(response).await {
+            error!("Error writing response: {}", e);
+            break;
         }
     }
 }

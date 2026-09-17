@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
 use log::{error, info};
+use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
+
+const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct Client {
     addr: String,
@@ -33,12 +36,18 @@ impl Client {
             .await
             .context("Failed to write request to socket")?;
 
-        // 3. Read the server's parsed response
+        // 3. Read the server's parsed response. The server now waits for a full
+        // RESP value before replying, so a truly incomplete payload never gets
+        // a response - bound the wait instead of blocking forever.
         let mut buffer = [0; 1024];
-        let bytes_read = stream
-            .read(&mut buffer)
-            .await
-            .context("Failed to read reply from server socket")?;
+        let bytes_read = match tokio::time::timeout(READ_TIMEOUT, stream.read(&mut buffer)).await
+        {
+            Ok(result) => result.context("Failed to read reply from server socket")?,
+            Err(_) => {
+                info!("No response within {:?} (server is still waiting on more bytes, as expected for incomplete input)", READ_TIMEOUT);
+                return Ok(());
+            }
+        };
 
         if bytes_read == 0 {
             error!("Server closed the connection before sending back data.");
@@ -84,9 +93,22 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 3: Send Invalid RESP Data (Missing trailing \r\n line delimiters)
+    // Test 3: Send an Array (how Redis commands are framed), e.g. ECHO hello
     if let Err(e) = client
-        .send_and_receive("+OK", "Send Invalid RESP Data")
+        .send_and_receive(
+            "*2\r\n$4\r\nECHO\r\n$5\r\nhello\r\n",
+            "Send Array (RESP command)",
+        )
+        .await
+    {
+        error!("Error in Array test: {:?}", e);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 4: Send Invalid RESP Data (unrecognized type byte)
+    if let Err(e) = client
+        .send_and_receive("@bad\r\n", "Send Invalid RESP Data")
         .await
     {
         error!("Error in Invalid Data test: {:?}", e);
