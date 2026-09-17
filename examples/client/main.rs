@@ -1,5 +1,8 @@
+mod resp_value;
+
 use anyhow::{Context, Result};
 use log::{error, info};
+use resp_value::RespValue;
 use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -71,11 +74,20 @@ impl Client {
             return Ok(());
         }
 
-        // 4. Parse response raw text bytes and display it
-        let response = std::str::from_utf8(&buffer[..bytes_read])
-            .context("Server response is not valid UTF-8 data")?;
+        // 4. Decode the RESP response and log it both ways: a human-readable
+        // rendering (the same shape `redis-cli` prints) and JSON.
+        let response_bytes = &buffer[..bytes_read];
+        match RespValue::decode(response_bytes) {
+            Ok((value, _bytes_consumed)) => {
+                info!("Received (readable):\n{}", value);
+                info!("Received (json): {}", value.to_json());
+            }
+            Err(decode_error) => {
+                let raw = std::str::from_utf8(response_bytes).unwrap_or("<non-UTF-8 bytes>");
+                error!("Failed to decode RESP response {:?}: {}", raw, decode_error);
+            }
+        }
 
-        info!("Received from server: {:?}", response);
         Ok(())
     }
 }
