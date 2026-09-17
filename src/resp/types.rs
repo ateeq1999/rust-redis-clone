@@ -11,6 +11,9 @@ pub enum RespType {
     /// The RESP encoding of "no value" (e.g. `GET` on a missing key):
     /// a bulk string with length `-1` and no payload, `$-1\r\n`.
     NullBulkString,
+    /// A signed 64-bit integer, e.g. the list length `LPUSH`/`RPUSH` reply
+    /// with. Example: `:1000\r\n`.
+    Integer(i64),
 }
 
 impl RespType {
@@ -26,6 +29,7 @@ impl RespType {
             b'-' => Self::parse_simple_error(buffer),
             b'$' => Self::parse_bulk_string(buffer),
             b'*' => Self::parse_array(buffer),
+            b':' => Self::parse_integer(buffer),
             invalid_byte => Err(RespError::Other(format!(
                 "Invalid RESP data type identifier byte: '{invalid_byte}'"
             ))),
@@ -147,6 +151,25 @@ impl RespType {
         Ok((RespType::Array(elements), bytes_consumed))
     }
 
+    /// Parse an Integer RESP value. Example: `:1000\r\n`
+    fn parse_integer(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
+        // Find the trailing CRLF, skipping the ':' byte at index 0
+        match Self::read_till_crlf(&buffer[1..]) {
+            Some((digit_bytes, bytes_consumed)) => match str::from_utf8(digit_bytes) {
+                Ok(digits) => match digits.parse::<i64>() {
+                    Ok(value) => Ok((RespType::Integer(value), bytes_consumed + 1)),
+                    Err(_) => Err(RespError::Other(format!(
+                        "Failed to parse RESP integer: '{digits}'"
+                    ))),
+                },
+                Err(_) => Err(RespError::Other(
+                    "Integer payload contains invalid non-UTF-8 characters".to_string(),
+                )),
+            },
+            None => Err(RespError::Incomplete),
+        }
+    }
+
     /// Finds the index of the first CRLF ("\r\n").
     /// Returns a tuple containing the slice *before* the CRLF, and the total bytes consumed up to and including CRLF.
     fn read_till_crlf(bytes: &[u8]) -> Option<(&[u8], usize)> {
@@ -197,6 +220,7 @@ impl RespType {
                 Bytes::from_iter(array_bytes)
             }
             RespType::NullBulkString => Bytes::from_static(b"$-1\r\n"),
+            RespType::Integer(value) => Bytes::from_iter(format!(":{}\r\n", value).into_bytes()),
         }
     }
 }

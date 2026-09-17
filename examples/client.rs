@@ -55,11 +55,13 @@ impl Client {
         // RESP value before replying, so a truly incomplete payload never gets
         // a response - bound the wait instead of blocking forever.
         let mut buffer = [0; 1024];
-        let bytes_read = match tokio::time::timeout(READ_TIMEOUT, stream.read(&mut buffer)).await
-        {
+        let bytes_read = match tokio::time::timeout(READ_TIMEOUT, stream.read(&mut buffer)).await {
             Ok(read_result) => read_result.context("Failed to read reply from server socket")?,
             Err(_) => {
-                info!("No response within {:?} (server is still waiting on more bytes, as expected for incomplete input)", READ_TIMEOUT);
+                info!(
+                    "No response within {:?} (server is still waiting on more bytes, as expected for incomplete input)",
+                    READ_TIMEOUT
+                );
                 return Ok(());
             }
         };
@@ -100,10 +102,7 @@ async fn main() -> Result<()> {
 
     // Test 2: PING with a message -> echoed back as a bulk string
     if let Err(test_error) = client
-        .send_and_receive(
-            &encode_command(&["PING", "hello"]),
-            "PING (with a message)",
-        )
+        .send_and_receive(&encode_command(&["PING", "hello"]), "PING (with a message)")
         .await
     {
         error!("Error in PING-with-message test: {:?}", test_error);
@@ -143,7 +142,85 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 6: An unrecognized command name -> a SimpleError from the command layer
+    // Test 6: RPUSH appends to the tail -> mylist is now ["a", "b", "c"],
+    // and the reply is the list's length as a RESP Integer.
+    if let Err(test_error) = client
+        .send_and_receive(
+            &encode_command(&["RPUSH", "mylist", "a", "b", "c"]),
+            "RPUSH mylist a b c",
+        )
+        .await
+    {
+        error!("Error in RPUSH test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 7: LPUSH prepends to the head -> mylist is now ["x", "a", "b", "c"]
+    if let Err(test_error) = client
+        .send_and_receive(&encode_command(&["LPUSH", "mylist", "x"]), "LPUSH mylist x")
+        .await
+    {
+        error!("Error in LPUSH test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 8: LRANGE mylist 0 -1 -> the whole list, "x", "a", "b", "c"
+    if let Err(test_error) = client
+        .send_and_receive(
+            &encode_command(&["LRANGE", "mylist", "0", "-1"]),
+            "LRANGE mylist 0 -1 (whole list)",
+        )
+        .await
+    {
+        error!("Error in LRANGE (whole list) test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 9: LRANGE mylist -2 -1 -> the last two elements, "b", "c"
+    if let Err(test_error) = client
+        .send_and_receive(
+            &encode_command(&["LRANGE", "mylist", "-2", "-1"]),
+            "LRANGE mylist -2 -1 (negative indices)",
+        )
+        .await
+    {
+        error!("Error in LRANGE (negative indices) test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 10: LRANGE mylist 0 100 -> stop is clamped to the last index
+    // rather than erroring, so this is the same as the whole-list case above.
+    if let Err(test_error) = client
+        .send_and_receive(
+            &encode_command(&["LRANGE", "mylist", "0", "100"]),
+            "LRANGE mylist 0 100 (out-of-range stop)",
+        )
+        .await
+    {
+        error!("Error in LRANGE (out-of-range) test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 11: LRANGE against "foo", which Test 3 SET to the string "bar" ->
+    // a WRONGTYPE error, since LRANGE only works on lists.
+    if let Err(test_error) = client
+        .send_and_receive(
+            &encode_command(&["LRANGE", "foo", "0", "-1"]),
+            "LRANGE on a string key (WRONGTYPE)",
+        )
+        .await
+    {
+        error!("Error in LRANGE (WRONGTYPE) test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 12: An unrecognized command name -> a SimpleError from the command layer
     if let Err(test_error) = client
         .send_and_receive(&encode_command(&["FOOBAR"]), "Unknown command")
         .await
@@ -153,7 +230,7 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 7: A well-formed RESP value that isn't a command array -> protocol error.
+    // Test 13: A well-formed RESP value that isn't a command array -> protocol error.
     // Real Redis clients always send commands as arrays of bulk strings.
     if let Err(test_error) = client
         .send_and_receive("+OK\r\n", "Non-array top-level value")
@@ -164,7 +241,7 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 8: Send Invalid RESP Data (unrecognized type byte)
+    // Test 14: Send Invalid RESP Data (unrecognized type byte)
     if let Err(test_error) = client
         .send_and_receive("@bad\r\n", "Send Invalid RESP Data")
         .await

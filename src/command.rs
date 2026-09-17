@@ -1,9 +1,13 @@
 pub mod get;
+pub mod lrange;
 pub mod ping;
+pub mod push;
 pub mod set;
 
 use crate::command::get::GetCommand;
+use crate::command::lrange::LRangeCommand;
 use crate::command::ping::PingCommand;
+use crate::command::push::{LPushCommand, RPushCommand};
 use crate::command::set::SetCommand;
 use crate::resp::types::RespType;
 use crate::storage::KeyValueStore;
@@ -17,6 +21,9 @@ pub enum Command {
     Ping(PingCommand),
     Set(SetCommand),
     Get(GetCommand),
+    LPush(LPushCommand),
+    RPush(RPushCommand),
+    LRange(LRangeCommand),
 }
 
 /// Represents errors that can occur while turning a RESP array into a `Command`.
@@ -81,6 +88,15 @@ impl Command {
             "get" => Ok(Command::Get(GetCommand::from_arguments(
                 command_arguments,
             )?)),
+            "lpush" => Ok(Command::LPush(LPushCommand::from_arguments(
+                command_arguments,
+            )?)),
+            "rpush" => Ok(Command::RPush(RPushCommand::from_arguments(
+                command_arguments,
+            )?)),
+            "lrange" => Ok(Command::LRange(LRangeCommand::from_arguments(
+                command_arguments,
+            )?)),
             _ => Err(CommandError::UnknownCommand(format!(
                 "ERR unknown command '{command_name}'"
             ))),
@@ -94,6 +110,9 @@ impl Command {
             Command::Ping(ping_command) => ping_command.execute(),
             Command::Set(set_command) => set_command.execute(store),
             Command::Get(get_command) => get_command.execute(store),
+            Command::LPush(lpush_command) => lpush_command.execute(store),
+            Command::RPush(rpush_command) => rpush_command.execute(store),
+            Command::LRange(lrange_command) => lrange_command.execute(store),
         }
     }
 }

@@ -1,6 +1,6 @@
 use super::CommandError;
 use crate::resp::types::RespType;
-use crate::storage::{KeyValueStore, Value};
+use crate::storage::{KeyValueStore, StorageError, Value};
 
 /// The Redis `GET` command: `GET <key>`.
 #[derive(Debug)]
@@ -30,11 +30,12 @@ impl GetCommand {
         Ok(GetCommand { key })
     }
 
-    /// Look the key up and reply with its value, or a null bulk string if
-    /// the key isn't set.
+    /// Look the key up and reply with its value, a null bulk string if the
+    /// key isn't set, or a WRONGTYPE error if it holds a non-string value.
     pub fn execute(self, store: &KeyValueStore) -> RespType {
         match store.get(&self.key) {
             Some(Value::String(text)) => RespType::BulkString(text),
+            Some(Value::List(_)) => RespType::SimpleError(StorageError::WrongType.to_string()),
             None => RespType::NullBulkString,
         }
     }
