@@ -179,8 +179,11 @@ impl RespType {
         match self {
             RespType::SimpleString(text) => Bytes::from_iter(format!("+{}\r\n", text).into_bytes()),
             RespType::BulkString(payload) => {
+                // RESP bulk string lengths are byte counts, not character
+                // counts - `str::len()` gives bytes, matching how
+                // `parse_bulk_string` reads the length back on the way in.
                 let bulk_string_bytes =
-                    format!("${}\r\n{}\r\n", payload.chars().count(), payload).into_bytes();
+                    format!("${}\r\n{}\r\n", payload.len(), payload).into_bytes();
                 Bytes::from_iter(bulk_string_bytes)
             }
             RespType::SimpleError(error_message) => {

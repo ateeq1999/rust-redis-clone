@@ -8,6 +8,21 @@ use tokio::{
 
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Encodes a command and its arguments as a RESP array of bulk strings - the
+/// wire format every real Redis client sends. For example,
+/// `encode_command(&["SET", "foo", "bar"])` produces
+/// `"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"`, without having to count
+/// bytes and build that string by hand.
+fn encode_command(parts: &[&str]) -> String {
+    let mut encoded = format!("*{}\r\n", parts.len());
+    for part in parts {
+        // RESP bulk string lengths are byte counts, not character counts -
+        // `str::len()` gives bytes, which is what we want here.
+        encoded.push_str(&format!("${}\r\n{}\r\n", part.len(), part));
+    }
+    encoded
+}
+
 pub struct Client {
     server_address: String,
 }
@@ -74,7 +89,7 @@ async fn main() -> Result<()> {
 
     // Test 1: PING with no arguments -> +PONG
     if let Err(test_error) = client
-        .send_and_receive("*1\r\n$4\r\nPING\r\n", "PING (no arguments)")
+        .send_and_receive(&encode_command(&["PING"]), "PING (no arguments)")
         .await
     {
         error!("Error in PING test: {:?}", test_error);
@@ -86,7 +101,7 @@ async fn main() -> Result<()> {
     // Test 2: PING with a message -> echoed back as a bulk string
     if let Err(test_error) = client
         .send_and_receive(
-            "*2\r\n$4\r\nPING\r\n$5\r\nhello\r\n",
+            &encode_command(&["PING", "hello"]),
             "PING (with a message)",
         )
         .await
@@ -100,10 +115,7 @@ async fn main() -> Result<()> {
     // store lives on the server and is shared across all of them, so the
     // GETs below (on their own connections) will still see this value.
     if let Err(test_error) = client
-        .send_and_receive(
-            "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",
-            "SET foo bar",
-        )
+        .send_and_receive(&encode_command(&["SET", "foo", "bar"]), "SET foo bar")
         .await
     {
         error!("Error in SET test: {:?}", test_error);
@@ -113,7 +125,7 @@ async fn main() -> Result<()> {
 
     // Test 4: GET foo -> the bulk string "bar", set by the previous test
     if let Err(test_error) = client
-        .send_and_receive("*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n", "GET foo")
+        .send_and_receive(&encode_command(&["GET", "foo"]), "GET foo")
         .await
     {
         error!("Error in GET test: {:?}", test_error);
@@ -123,10 +135,7 @@ async fn main() -> Result<()> {
 
     // Test 5: GET on a key that was never set -> a null bulk string ($-1)
     if let Err(test_error) = client
-        .send_and_receive(
-            "*2\r\n$3\r\nGET\r\n$7\r\nmissing\r\n",
-            "GET on a missing key",
-        )
+        .send_and_receive(&encode_command(&["GET", "missing"]), "GET on a missing key")
         .await
     {
         error!("Error in GET-missing-key test: {:?}", test_error);
@@ -136,7 +145,7 @@ async fn main() -> Result<()> {
 
     // Test 6: An unrecognized command name -> a SimpleError from the command layer
     if let Err(test_error) = client
-        .send_and_receive("*1\r\n$6\r\nFOOBAR\r\n", "Unknown command")
+        .send_and_receive(&encode_command(&["FOOBAR"]), "Unknown command")
         .await
     {
         error!("Error in Unknown Command test: {:?}", test_error);
