@@ -12,20 +12,23 @@ impl Decoder for RespCodec {
     type Item = RespType;
     type Error = io::Error;
 
-    fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<Self::Item>> {
-        if src.is_empty() {
+    fn decode(&mut self, read_buffer: &mut BytesMut) -> io::Result<Option<Self::Item>> {
+        if read_buffer.is_empty() {
             return Ok(None);
         }
 
-        match RespType::parse(src) {
-            Ok((value, consumed)) => {
-                src.advance(consumed);
+        match RespType::parse(read_buffer) {
+            Ok((value, bytes_consumed)) => {
+                read_buffer.advance(bytes_consumed);
                 Ok(Some(value))
             }
             // Not a protocol error: the rest of the value just hasn't arrived
-            // yet, so leave `src` untouched and wait for more bytes.
+            // yet, so leave `read_buffer` untouched and wait for more bytes.
             Err(RespError::Incomplete) => Ok(None),
-            Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+            Err(parse_error) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                parse_error.to_string(),
+            )),
         }
     }
 }
@@ -33,8 +36,8 @@ impl Decoder for RespCodec {
 impl Encoder<RespType> for RespCodec {
     type Error = io::Error;
 
-    fn encode(&mut self, item: RespType, dst: &mut BytesMut) -> io::Result<()> {
-        dst.extend_from_slice(&item.to_bytes());
+    fn encode(&mut self, value: RespType, write_buffer: &mut BytesMut) -> io::Result<()> {
+        write_buffer.extend_from_slice(&value.to_bytes());
         Ok(())
     }
 }

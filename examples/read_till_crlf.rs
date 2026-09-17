@@ -1,9 +1,9 @@
 use bytes::BytesMut;
 
-fn _read_till_crlf(buf: &[u8]) -> Option<(&[u8], usize)> {
-    for (index, window) in buf.windows(2).enumerate() {
+fn _read_till_crlf(bytes: &[u8]) -> Option<(&[u8], usize)> {
+    for (index, window) in bytes.windows(2).enumerate() {
         if window == b"\r\n" {
-            return Some((&buf[..index], index + 2));
+            return Some((&bytes[..index], index + 2));
         }
     }
     None
@@ -20,17 +20,19 @@ fn main() {
         println!("buffer contains data")
     }
 
-    let identifier = buffer[0];
-    let payload_len = buffer[1] as char;
-    let window_buffer = &buffer[1..];
+    let type_identifier = buffer[0];
+    let length_digit_char = buffer[1] as char;
+    let bytes_after_identifier = &buffer[1..];
 
     println!("buffer: {:?}", &buffer[..]);
-    println!("identifier: {:?}", identifier);
-    println!("payload len: {:?}", payload_len);
+    println!("identifier: {:?}", type_identifier);
+    println!("length digit: {:?}", length_digit_char);
 
-    let buffer_windows = window_buffer.windows(CRLF_BYTES_SIZE).enumerate();
+    let sliding_windows = bytes_after_identifier
+        .windows(CRLF_BYTES_SIZE)
+        .enumerate();
 
-    for (index, window) in buffer_windows {
+    for (index, window) in sliding_windows {
         println!("index: {}, and bytes window of 2: {:?}", index, window);
 
         if window == b"\r\n" {
@@ -38,13 +40,13 @@ fn main() {
             println!(
                 "&buffer[..{}]: {:?} and index + 2: {}",
                 index,
-                &window_buffer[..index],
+                &bytes_after_identifier[..index],
                 index + CRLF_BYTES_SIZE
             );
 
-            let data_len: u32 = payload_len.to_string().parse().unwrap();
+            let bulk_string_length: u32 = length_digit_char.to_string().parse().unwrap();
 
-            println!("payload length: {}", data_len);
+            println!("payload length: {}", bulk_string_length);
             println!(
                 "payload start: {}, payload: {:?}",
                 index + CRLF_BYTES_SIZE,

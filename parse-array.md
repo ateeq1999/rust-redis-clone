@@ -29,26 +29,26 @@ array: `$4\r\nECHO\r\n` (a 10-byte bulk string, indices 4-13) and
 ```rust
 fn parse_array(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
     // 1. Find the first CRLF to extract the element-count line.
-    let (len_bytes, length_line_size) = match Self::read_till_crlf(&buffer[1..]) {
+    let (length_line_bytes, length_line_byte_count) = match Self::read_till_crlf(&buffer[1..]) {
         Some(result) => result,
         None => return Err(RespError::Incomplete),
     };
 
     // 2. Parse the number of elements the array should contain
-    let num_elements = Self::parse_usize_from_buf(len_bytes)?;
+    let element_count = Self::parse_usize_from_bytes(length_line_bytes)?;
 
     // +1 accounts for the leading '*' byte
-    let mut consumed = 1 + length_line_size;
-    let mut elements = Vec::with_capacity(num_elements);
+    let mut bytes_consumed = 1 + length_line_byte_count;
+    let mut elements = Vec::with_capacity(element_count);
 
     // 3. Parse each element in turn, advancing past whatever bytes it consumed.
-    for _ in 0..num_elements {
-        let (element, element_size) = Self::parse(&buffer[consumed..])?;
+    for _ in 0..element_count {
+        let (element, element_byte_count) = Self::parse(&buffer[bytes_consumed..])?;
         elements.push(element);
-        consumed += element_size;
+        bytes_consumed += element_byte_count;
     }
 
-    Ok((RespType::Array(elements), consumed))
+    Ok((RespType::Array(elements), bytes_consumed))
 }
 ```
 
@@ -57,7 +57,7 @@ fn parse_array(buffer: &[u8]) -> Result<(RespType, usize), RespError> {
 ### Step 1 — find the count line
 
 ```rust
-let (len_bytes, length_line_size) = match Self::read_till_crlf(&buffer[1..]) {
+let (length_line_bytes, length_line_byte_count) = match Self::read_till_crlf(&buffer[1..]) {
     Some(result) => result,
     None => return Err(RespError::Incomplete),
 };
@@ -76,8 +76,8 @@ For our example, `buffer[1..]` is:
 
 The first CRLF is right after the `2`, so:
 
-- `len_bytes` = `b"2"`
-- `length_line_size` = `3` (the `2`, plus the 2 bytes of `\r\n`)
+- `length_line_bytes` = `b"2"`
+- `length_line_byte_count` = `3` (the `2`, plus the 2 bytes of `\r\n`)
 
 If the buffer had ended mid-way through the count line — say the socket had
 only delivered `*2` so far with no trailing CRLF yet — `read_till_crlf` would
@@ -88,11 +88,11 @@ protocol error; it tells the codec in [`src/resp/codec.rs`](src/resp/codec.rs)
 ### Step 2 — parse the element count
 
 ```rust
-let num_elements = Self::parse_usize_from_buf(len_bytes)?;
+let element_count = Self::parse_usize_from_bytes(length_line_bytes)?;
 ```
 
-`parse_usize_from_buf(b"2")` converts the ASCII digits to a `usize`:
-`num_elements = 2`. If the bytes weren't valid UTF-8 or didn't parse as a
+`parse_usize_from_bytes(b"2")` converts the ASCII digits to a `usize`:
+`element_count = 2`. If the bytes weren't valid UTF-8 or didn't parse as a
 number (e.g. `*abc\r\n`), this returns `RespError::Other(..)` — a real
 protocol error, not `Incomplete`, since arriving bytes can never fix
 "abc" into a number.
@@ -100,29 +100,29 @@ protocol error, not `Incomplete`, since arriving bytes can never fix
 ### Step 3 — set up the consume cursor
 
 ```rust
-let mut consumed = 1 + length_line_size;
-let mut elements = Vec::with_capacity(num_elements);
+let mut bytes_consumed = 1 + length_line_byte_count;
+let mut elements = Vec::with_capacity(element_count);
 ```
 
-`consumed` tracks how many bytes of `buffer` we've accounted for so far, so
-the *next* element always starts at `buffer[consumed..]`.
+`bytes_consumed` tracks how many bytes of `buffer` we've accounted for so
+far, so the *next* element always starts at `buffer[bytes_consumed..]`.
 
 - `1` — the leading `*` byte we skipped in Step 1
-- `length_line_size` — the `2\r\n` we just consumed (3 bytes)
+- `length_line_byte_count` — the `2\r\n` we just consumed (3 bytes)
 
-So `consumed = 1 + 3 = 4`. That's exactly the index where `$4\r\nECHO\r\n`
-begins in the byte table above — index 4.
+So `bytes_consumed = 1 + 3 = 4`. That's exactly the index where
+`$4\r\nECHO\r\n` begins in the byte table above — index 4.
 
-`elements` is pre-sized to `num_elements` (2) since we already know how many
+`elements` is pre-sized to `element_count` (2) since we already know how many
 we're about to push.
 
 ### Step 4 — parse each element, advancing the cursor
 
 ```rust
-for _ in 0..num_elements {
-    let (element, element_size) = Self::parse(&buffer[consumed..])?;
+for _ in 0..element_count {
+    let (element, element_byte_count) = Self::parse(&buffer[bytes_consumed..])?;
     elements.push(element);
-    consumed += element_size;
+    bytes_consumed += element_byte_count;
 }
 ```
 
@@ -132,7 +132,7 @@ This is the recursive heart of it: each element can be *any* RESP type
 us into `parse_array` in the first place — and let it figure out what's
 there.
 
-**Iteration 1** (`consumed == 4`):
+**Iteration 1** (`bytes_consumed == 4`):
 
 `buffer[4..]` is `$4\r\nECHO\r\nhello...` (everything from index 4 onward).
 `Self::parse` sees `$` and calls `parse_bulk_string`, which reads the length
@@ -140,49 +140,49 @@ line (`4`), then reads exactly 4 payload bytes (`ECHO`), then checks for the
 trailing `\r\n`. It returns:
 
 ```
-element      = RespType::BulkString("ECHO")
-element_size = 10   // "$4\r\nECHO\r\n" is 10 bytes
+element            = RespType::BulkString("ECHO")
+element_byte_count = 10   // "$4\r\nECHO\r\n" is 10 bytes
 ```
 
 We push `BulkString("ECHO")` onto `elements` and update:
 
 ```
-consumed = 4 + 10 = 14
+bytes_consumed = 4 + 10 = 14
 ```
 
 Index 14 in the byte table is exactly where `$5\r\nhello\r\n` starts — the
-cursor lines up perfectly because `element_size` is "bytes this element
+cursor lines up perfectly because `element_byte_count` is "bytes this element
 occupied in the buffer", not "characters in the string".
 
-**Iteration 2** (`consumed == 14`):
+**Iteration 2** (`bytes_consumed == 14`):
 
 `buffer[14..]` is `$5\r\nhello\r\n`. `parse_bulk_string` reads length `5`,
 payload `hello`, and the trailing CRLF. It returns:
 
 ```
-element      = RespType::BulkString("hello")
-element_size = 11   // "$5\r\nhello\r\n" is 11 bytes
+element            = RespType::BulkString("hello")
+element_byte_count = 11   // "$5\r\nhello\r\n" is 11 bytes
 ```
 
 We push `BulkString("hello")` and update:
 
 ```
-consumed = 14 + 11 = 25
+bytes_consumed = 14 + 11 = 25
 ```
 
-The loop has now run `num_elements` (2) times, so it ends.
+The loop has now run `element_count` (2) times, so it ends.
 
 If the buffer had been cut short — say the client had only sent
 `$5\r\nhel` so far — `parse_bulk_string` would detect the payload is shorter
 than expected and return `Err(RespError::Incomplete)`. The `?` on
-`Self::parse(&buffer[consumed..])?` propagates that straight out of
+`Self::parse(&buffer[bytes_consumed..])?` propagates that straight out of
 `parse_array` too: **the whole array is only "ready" once every one of its
 elements is fully buffered**, no matter how deep the nesting goes.
 
 ### Step 5 — return the assembled array
 
 ```rust
-Ok((RespType::Array(elements), consumed))
+Ok((RespType::Array(elements), bytes_consumed))
 ```
 
 Final result for our example:

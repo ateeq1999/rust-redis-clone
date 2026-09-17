@@ -18,13 +18,13 @@ pub enum RespError {
 }
 
 impl std::fmt::Display for RespError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RespError::Incomplete => "Incomplete RESP data: waiting for more bytes".fmt(f),
-            RespError::Other(msg) => msg.as_str().fmt(f),
-            RespError::InvalidBulkString(msg) => msg.as_str().fmt(f),
-            RespError::InvalidSimpleString(msg) => msg.as_str().fmt(f),
-            RespError::InvalidSimpleError(msg) => msg.as_str().fmt(f),
+            RespError::Incomplete => "Incomplete RESP data: waiting for more bytes".fmt(formatter),
+            RespError::Other(message) => message.as_str().fmt(formatter),
+            RespError::InvalidBulkString(message) => message.as_str().fmt(formatter),
+            RespError::InvalidSimpleString(message) => message.as_str().fmt(formatter),
+            RespError::InvalidSimpleError(message) => message.as_str().fmt(formatter),
         }
     }
 }

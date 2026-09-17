@@ -18,24 +18,24 @@ impl Server {
         Server { listener }
     }
 
-    pub async fn accept_conn(&mut self) -> Result<TcpStream> {
+    pub async fn accept_connection(&mut self) -> Result<TcpStream> {
         match self.listener.accept().await {
-            Ok((socket, _)) => Ok(socket),
-            Err(e) => Err(Error::from(e)),
+            Ok((connection, _)) => Ok(connection),
+            Err(accept_error) => Err(Error::from(accept_error)),
         }
     }
 
     pub async fn run(&mut self) -> Result<()> {
         loop {
-            let sock = match self.accept_conn().await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    error!("{}", e);
+            let connection = match self.accept_connection().await {
+                Ok(connection) => connection,
+                Err(accept_error) => {
+                    error!("{}", accept_error);
                     panic!("Error accepting connection")
                 }
             };
 
-            tokio::spawn(handle_connection(sock));
+            tokio::spawn(handle_connection(connection));
         }
     }
 }
@@ -43,20 +43,20 @@ impl Server {
 /// Drives a single connection: frames RESP values off the socket via
 /// `RespCodec` and echoes each one back, until the client disconnects
 /// or sends something the codec can't parse.
-async fn handle_connection(sock: TcpStream) {
-    let mut frames = Framed::new(sock, RespCodec);
+async fn handle_connection(connection: TcpStream) {
+    let mut frames = Framed::new(connection, RespCodec);
 
-    while let Some(result) = frames.next().await {
-        let response = match result {
+    while let Some(decoded_frame) = frames.next().await {
+        let response = match decoded_frame {
             Ok(value) => value,
-            Err(e) => {
-                error!("Error reading request: {}", e);
-                RespType::SimpleError(e.to_string())
+            Err(read_error) => {
+                error!("Error reading request: {}", read_error);
+                RespType::SimpleError(read_error.to_string())
             }
         };
 
-        if let Err(e) = frames.send(response).await {
-            error!("Error writing response: {}", e);
+        if let Err(write_error) = frames.send(response).await {
+            error!("Error writing response: {}", write_error);
             break;
         }
     }
@@ -65,16 +65,16 @@ async fn handle_connection(sock: TcpStream) {
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
-    let addr = "127.0.0.1:6300".to_string();
+    let server_address = "127.0.0.1:6300".to_string();
 
-    let listener = match TcpListener::bind(&addr).await {
+    let listener = match TcpListener::bind(&server_address).await {
         Ok(tcp_listener) => {
-            info!("TCP listener start at addr: {}", addr);
+            info!("TCP listener start at addr: {}", server_address);
             tcp_listener
         }
-        Err(e) => panic!(
+        Err(bind_error) => panic!(
             "Couldn't bind the TCP listener to addr: {}, error: {}",
-            addr, e
+            server_address, bind_error
         ),
     };
 
