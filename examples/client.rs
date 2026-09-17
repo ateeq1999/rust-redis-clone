@@ -72,41 +72,52 @@ async fn main() -> Result<()> {
     let server_address = "127.0.0.1:6300";
     let client = Client::new(server_address);
 
-    // Test 1: Send Bulk String
+    // Test 1: PING with no arguments -> +PONG
     if let Err(test_error) = client
-        .send_and_receive("$5\r\nhello\r\n", "Send Bulk String")
+        .send_and_receive("*1\r\n$4\r\nPING\r\n", "PING (no arguments)")
         .await
     {
-        error!("Error in Bulk String test: {:?}", test_error);
+        error!("Error in PING test: {:?}", test_error);
     }
 
     // Add a tiny sleep delay between requests to separate socket streams visibly
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 2: Send Simple String
-    if let Err(test_error) = client
-        .send_and_receive("+OK\r\n", "Send Simple String")
-        .await
-    {
-        error!("Error in Simple String test: {:?}", test_error);
-    }
-
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    // Test 3: Send an Array (how Redis commands are framed), e.g. ECHO hello
+    // Test 2: PING with a message -> echoed back as a bulk string
     if let Err(test_error) = client
         .send_and_receive(
-            "*2\r\n$4\r\nECHO\r\n$5\r\nhello\r\n",
-            "Send Array (RESP command)",
+            "*2\r\n$4\r\nPING\r\n$5\r\nhello\r\n",
+            "PING (with a message)",
         )
         .await
     {
-        error!("Error in Array test: {:?}", test_error);
+        error!("Error in PING-with-message test: {:?}", test_error);
     }
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 4: Send Invalid RESP Data (unrecognized type byte)
+    // Test 3: An unrecognized command name -> a SimpleError from the command layer
+    if let Err(test_error) = client
+        .send_and_receive("*1\r\n$6\r\nFOOBAR\r\n", "Unknown command")
+        .await
+    {
+        error!("Error in Unknown Command test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 4: A well-formed RESP value that isn't a command array -> protocol error.
+    // Real Redis clients always send commands as arrays of bulk strings.
+    if let Err(test_error) = client
+        .send_and_receive("+OK\r\n", "Non-array top-level value")
+        .await
+    {
+        error!("Error in Non-Array test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 5: Send Invalid RESP Data (unrecognized type byte)
     if let Err(test_error) = client
         .send_and_receive("@bad\r\n", "Send Invalid RESP Data")
         .await
