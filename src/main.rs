@@ -6,18 +6,21 @@ use tokio_util::codec::Framed;
 
 mod command;
 mod resp;
+mod storage;
 use crate::command::Command;
 use crate::resp::codec::RespCodec;
 use crate::resp::types::RespType;
+use crate::storage::KeyValueStore;
 
 #[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
+    store: KeyValueStore,
 }
 
 impl Server {
-    pub fn new(listener: TcpListener) -> Server {
-        Server { listener }
+    pub fn new(listener: TcpListener, store: KeyValueStore) -> Server {
+        Server { listener, store }
     }
 
     pub async fn accept_connection(&mut self) -> Result<TcpStream> {
@@ -37,16 +40,18 @@ impl Server {
                 }
             };
 
-            tokio::spawn(handle_connection(connection));
+            // `KeyValueStore` is a cheap `Arc` clone, so every connection
+            // task shares the same underlying data.
+            tokio::spawn(handle_connection(connection, self.store.clone()));
         }
     }
 }
 
 /// Drives a single connection: frames RESP values off the socket via
-/// `RespCodec`, dispatches each one as a command, and writes back the
-/// command's response - until the client disconnects or sends something
-/// the codec can't parse.
-async fn handle_connection(connection: TcpStream) {
+/// `RespCodec`, dispatches each one as a command against `store`, and writes
+/// back the command's response - until the client disconnects or sends
+/// something the codec can't parse.
+async fn handle_connection(connection: TcpStream, store: KeyValueStore) {
     let mut frames = Framed::new(connection, RespCodec);
 
     while let Some(decoded_frame) = frames.next().await {
@@ -54,7 +59,7 @@ async fn handle_connection(connection: TcpStream) {
             // A real Redis client always sends commands as an array of bulk
             // strings, so this is the only shape we dispatch.
             Ok(RespType::Array(elements)) => match Command::from_array_elements(elements) {
-                Ok(command) => command.execute(),
+                Ok(command) => command.execute(&store),
                 Err(command_error) => RespType::from(command_error),
             },
             Ok(_) => RespType::SimpleError(
@@ -89,7 +94,8 @@ async fn main() -> Result<()> {
         ),
     };
 
-    let mut server = Server::new(listener);
+    let store = KeyValueStore::new();
+    let mut server = Server::new(listener, store);
     server.run().await?;
     Ok(())
 }

@@ -1,7 +1,12 @@
+pub mod get;
 pub mod ping;
+pub mod set;
 
+use crate::command::get::GetCommand;
 use crate::command::ping::PingCommand;
+use crate::command::set::SetCommand;
 use crate::resp::types::RespType;
+use crate::storage::KeyValueStore;
 
 /// A parsed, ready-to-run Redis command.
 ///
@@ -10,6 +15,8 @@ use crate::resp::types::RespType;
 #[derive(Debug)]
 pub enum Command {
     Ping(PingCommand),
+    Set(SetCommand),
+    Get(GetCommand),
 }
 
 /// Represents errors that can occur while turning a RESP array into a `Command`.
@@ -68,16 +75,25 @@ impl Command {
             "ping" => Ok(Command::Ping(PingCommand::from_arguments(
                 command_arguments,
             )?)),
+            "set" => Ok(Command::Set(SetCommand::from_arguments(
+                command_arguments,
+            )?)),
+            "get" => Ok(Command::Get(GetCommand::from_arguments(
+                command_arguments,
+            )?)),
             _ => Err(CommandError::UnknownCommand(format!(
                 "ERR unknown command '{command_name}'"
             ))),
         }
     }
 
-    /// Run the command and produce the RESP value to send back to the client.
-    pub fn execute(self) -> RespType {
+    /// Run the command against the shared store and produce the RESP value
+    /// to send back to the client.
+    pub fn execute(self, store: &KeyValueStore) -> RespType {
         match self {
             Command::Ping(ping_command) => ping_command.execute(),
+            Command::Set(set_command) => set_command.execute(store),
+            Command::Get(get_command) => get_command.execute(store),
         }
     }
 }

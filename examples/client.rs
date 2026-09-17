@@ -96,7 +96,45 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 3: An unrecognized command name -> a SimpleError from the command layer
+    // Test 3: SET foo bar -> +OK. Each test opens a fresh connection, but the
+    // store lives on the server and is shared across all of them, so the
+    // GETs below (on their own connections) will still see this value.
+    if let Err(test_error) = client
+        .send_and_receive(
+            "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",
+            "SET foo bar",
+        )
+        .await
+    {
+        error!("Error in SET test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 4: GET foo -> the bulk string "bar", set by the previous test
+    if let Err(test_error) = client
+        .send_and_receive("*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n", "GET foo")
+        .await
+    {
+        error!("Error in GET test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 5: GET on a key that was never set -> a null bulk string ($-1)
+    if let Err(test_error) = client
+        .send_and_receive(
+            "*2\r\n$3\r\nGET\r\n$7\r\nmissing\r\n",
+            "GET on a missing key",
+        )
+        .await
+    {
+        error!("Error in GET-missing-key test: {:?}", test_error);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Test 6: An unrecognized command name -> a SimpleError from the command layer
     if let Err(test_error) = client
         .send_and_receive("*1\r\n$6\r\nFOOBAR\r\n", "Unknown command")
         .await
@@ -106,7 +144,7 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 4: A well-formed RESP value that isn't a command array -> protocol error.
+    // Test 7: A well-formed RESP value that isn't a command array -> protocol error.
     // Real Redis clients always send commands as arrays of bulk strings.
     if let Err(test_error) = client
         .send_and_receive("+OK\r\n", "Non-array top-level value")
@@ -117,7 +155,7 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Test 5: Send Invalid RESP Data (unrecognized type byte)
+    // Test 8: Send Invalid RESP Data (unrecognized type byte)
     if let Err(test_error) = client
         .send_and_receive("@bad\r\n", "Send Invalid RESP Data")
         .await

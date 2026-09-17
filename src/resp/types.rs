@@ -8,6 +8,9 @@ pub enum RespType {
     BulkString(String),
     SimpleError(String),
     Array(Vec<RespType>),
+    /// The RESP encoding of "no value" (e.g. `GET` on a missing key):
+    /// a bulk string with length `-1` and no payload, `$-1\r\n`.
+    NullBulkString,
 }
 
 impl RespType {
@@ -75,6 +78,13 @@ impl RespType {
             Some(result) => result,
             None => return Err(RespError::Incomplete),
         };
+
+        // A length of -1 denotes a null bulk string ("$-1\r\n"): unlike every
+        // other bulk string, it has no payload or trailing CRLF of its own -
+        // the length line above is the entire value.
+        if length_line_bytes == b"-1" {
+            return Ok((RespType::NullBulkString, 1 + length_line_byte_count));
+        }
 
         // 2. Parse the payload length from the extracted bytes line
         let bulk_string_length = Self::parse_usize_from_bytes(length_line_bytes)?;
@@ -183,6 +193,7 @@ impl RespType {
                 }
                 Bytes::from_iter(array_bytes)
             }
+            RespType::NullBulkString => Bytes::from_static(b"$-1\r\n"),
         }
     }
 }
